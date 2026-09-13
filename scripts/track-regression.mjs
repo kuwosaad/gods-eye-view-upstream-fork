@@ -276,7 +276,11 @@ async function main() {
         // errors (TypeError, unhandled rejection, etc.) are still captured.
         const isBenign404 = /Failed to load resource.*404/i.test(text);
         const sourceUrl = msg.location()?.url || '';
-        if (!isBenign404) consoleErrors.push(sourceUrl ? `${text} [${sourceUrl}]` : text);
+        const isBenignFontNetworkFailure =
+          sourceUrl.startsWith('https://fonts.gstatic.com/') &&
+          /Failed to load resource/i.test(text);
+        if (!isBenign404 && !isBenignFontNetworkFailure)
+          consoleErrors.push(sourceUrl ? `${text} [${sourceUrl}]` : text);
       }
       // Surface a trace for debugging, but keep it quiet.
       if (process.env.GEV_TEST_VERBOSE) console.log(`    [page:${type}] ${text}`);

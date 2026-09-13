@@ -2042,6 +2042,25 @@ body.ui-clean-view #scene-runtime.active {
   pointer-events: none;
 }
 #global-loading-status[hidden] { display: none; }
+
+/* Opt-in status for the local agent bridge. The MCP bootstrap enables it. */
+#agent-connection-indicator {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 40;
+  padding: 6px 9px;
+  border: 1px solid rgba(114, 227, 255, 0.32);
+  background: rgba(5, 13, 21, 0.78);
+  color: #72e3ff;
+  font: 500 9px/1.2 var(--font-mono, 'JetBrains Mono', monospace);
+  letter-spacing: 0.08em;
+  pointer-events: none;
+  opacity: 0.86;
+}
+#agent-connection-indicator[hidden] { display: none; }
+#agent-connection-indicator[data-tone='pending'] { color: #ffd488; border-color: rgba(255, 212, 136, 0.4); }
+#agent-connection-indicator[data-tone='offline'] { color: #ff9b8e; border-color: rgba(255, 98, 82, 0.4); }
 #global-loading-label {
   color: rgba(184, 244, 255, 0.92);
 }

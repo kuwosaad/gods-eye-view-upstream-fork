@@ -34,7 +34,7 @@ Photorealistic 3D globe. Live aircraft, ships, satellites, earthquakes, traffic,
 
 <div align="center">
 
-**[Quick Start](#-quick-start) · [First Five Minutes](#-the-first-five-minutes) · [Talk to It](#-talk-to-it) · [What's Live](#-whats-on-the-globe) · [Under the Hood](#-under-the-hood) · [Keys & Costs](#-api-keys)**
+**[Quick Start](#-quick-start) · [First Five Minutes](#-the-first-five-minutes) · [Talk to It](#-talk-to-it) · [What's Live](#-whats-on-the-globe) · [Under the Hood](#-under-the-hood) · [MCP](#-agent-control-through-mcp) · [Keys & Costs](#-api-keys)**
 
 </div>
 
@@ -365,6 +365,15 @@ src/
 See [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md) for the authoritative runtime reference.
 
 ---
+
+## 🧭 Agent Control Through MCP
+
+God's Eye View includes one local MCP server so compatible agents can observe
+and control a live globe through the same 28 actions as voice control. Set
+`GEV_AGENT_TOKEN` when starting the server, open the app in a browser, then
+connect an MCP client to `http://localhost:4173/mcp`. See the
+[MCP setup and status guide](docs/AGENT-MCP.md) and the
+[phase plan](docs/AGENT-MCP-PLAN.md).
 
 ## 🔑 API Keys
 

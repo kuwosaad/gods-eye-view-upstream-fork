@@ -237,10 +237,60 @@
       "server/providers/openai/rate-limit.js",
       "server/providers/openai/realtime.js",
       "server/providers/openai/tools.js",
+      "src/agent/toolCatalog.js",
       "src/hudSummaryResponse.js",
       "src/voice/voiceCost.js"
     ],
     "external": []
+  },
+  "mcp-provider": {
+    "runtime": "node",
+    "exports": ["./server/providers/mcp"],
+    "modules": [
+      "server/providers/mcp.js",
+      "server/agent-bridge/protocol.js",
+      "src/agent/toolCatalog.js"
+    ],
+    "external": ["@modelcontextprotocol/sdk", "zod"]
+  },
+  "mcp-core": {
+    "runtime": "node",
+    "exports": ["./server/mcp"],
+    "modules": [
+      "server/mcp/index.js",
+      "server/mcp/errors.js",
+      "server/mcp/browser-connection.js",
+      "server/mcp/session-registry.js",
+      "server/mcp/dispatcher.js",
+      "server/mcp/control-plane.js",
+      "server/mcp/security.js",
+      "server/mcp/audit.js",
+      "server/mcp/resources.js",
+      "server/mcp/artifact-store.js",
+      "server/mcp/imagery-tools.js",
+      "server/mcp/server-tools.js",
+      "server/mcp/runtime.js",
+      "server/agent-bridge/bridge.js",
+      "server/agent-bridge/protocol.js",
+      "src/agent/resourceViews.js",
+      "src/agent/toolCatalog.js"
+    ],
+    "external": ["ws"]
+  },
+  "mcp-stdio": {
+    "runtime": "node",
+    "exports": ["./server/mcp/stdio"],
+    "modules": ["server/mcp/stdio.js"],
+    "external": ["@modelcontextprotocol/sdk", "zod"]
+  },
+  "agent-bridge": {
+    "runtime": "node",
+    "exports": ["./server/agent-bridge"],
+    "modules": [
+      "server/agent-bridge/bridge.js",
+      "server/agent-bridge/protocol.js"
+    ],
+    "external": ["ws"]
   },
   "standalone-key-setup": {
     "runtime": "node",

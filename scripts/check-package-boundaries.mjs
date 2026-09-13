@@ -115,7 +115,14 @@ export async function checkPackageBoundaries(root) {
         assetsInlineLimit: 0,
         rollupOptions: {
           input,
-          external: group.external,
+          // Treat dependency subpath imports as part of the declared package
+          // dependency. This matters for scoped packages such as the MCP SDK,
+          // whose public entry points import several internal submodules.
+          external: (id) =>
+            group.external.some(
+              (dependency) =>
+                id === dependency || id.startsWith(`${dependency}/`),
+            ),
           // Unused imports must still obey ownership; tree shaking is not a boundary.
           treeshake: false,
           preserveEntrySignatures: 'strict',

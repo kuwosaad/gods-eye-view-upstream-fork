@@ -10,6 +10,14 @@ import {
   releaseContinuousRender,
 } from '../renderGovernor.js';
 import { startStandaloneChrome } from './startupChrome.js';
+import { createAgentBrowserClient } from '../agent/browserClient.js';
+import { createAgentConnectionIndicator } from '../agent/connectionIndicator.js';
+import { GEV_AGENT_TOOL_CATALOG } from '../agent/toolCatalog.js';
+import { createAgentObservationReader } from '../agent/observations.js';
+import {
+  DEFAULT_CAPTURE_MAX_ENCODED_BYTES,
+  DEFAULT_CAPTURE_MAX_PIXELS,
+} from '../agent/captureView.js';
 
 /** Attach scene tools, rendering listeners and the standalone debug handle. */
 export function createStandaloneTools({
@@ -113,5 +121,55 @@ export function createStandaloneTools({
       delete window.__gevVoiceCommands;
   });
   debug.voiceCommands = voiceCommands;
+  if (import.meta.env.GEV_AGENT_ENABLED && import.meta.env.GEV_AGENT_TOKEN) {
+    const indicatorElement = document.getElementById(
+      'agent-connection-indicator',
+    );
+    const connectionIndicator = indicatorElement
+      ? createAgentConnectionIndicator({
+          element: indicatorElement,
+          enabled: true,
+        })
+      : null;
+    defer(() => connectionIndicator?.destroy());
+    const querySession = new URLSearchParams(window.location.search).get(
+      'agentSession',
+    );
+    const observations = createAgentObservationReader({
+      viewer,
+      styleManager,
+      dataManager,
+      sceneDirector,
+      annotations,
+    });
+    const agent = createAgentBrowserClient({
+      sessionId: querySession || 'default',
+      token: import.meta.env.GEV_AGENT_TOKEN,
+      actionRunner: voiceCommands.runner,
+      getState: observations.getState,
+      getHealth: observations.getHealth,
+      capture: {
+        viewer,
+        documentRef: document,
+        maxPixels: Math.min(DEFAULT_CAPTURE_MAX_PIXELS, 640 * 480),
+        maxEncodedBytes: DEFAULT_CAPTURE_MAX_ENCODED_BYTES,
+        format: 'jpeg',
+        quality: 0.6,
+        requireFresh: false,
+      },
+      tools: [
+        ...GEV_AGENT_TOOL_CATALOG.map((tool) => tool.name),
+        'get_state',
+        'get_health',
+        'gev_capture_view',
+      ],
+      onStateChange: (state) => connectionIndicator?.update(state),
+    });
+    debug.agent = agent;
+    defer(() => {
+      agent.destroy();
+      if (debug.agent === agent) delete debug.agent;
+    });
+  }
   return { sceneDirector, annotations, voiceCommands };
 }

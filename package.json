@@ -37,21 +37,25 @@
     "format:check": "node scripts/format.mjs --check",
     "dev": "vite",
     "dev:secure": "./scripts/dev-secure.sh",
+    "mcp:stdio": "node scripts/mcp-stdio.mjs",
     "opensky:import": "./scripts/opensky-import-client.sh",
     "build": "vite build",
     "preview": "vite preview",
     "test": "node scripts/run-unit-tests.mjs",
     "test:track": "node scripts/track-regression.mjs",
     "qa:map-source-tray": "node scripts/qa-map-source-tray.mjs",
+    "qa:mcp": "node scripts/qa-mcp.mjs",
     "check:boundaries": "node scripts/check-package-boundaries.mjs"
   },
   "dependencies": {
     "@mapbox/vector-tile": "^3.0.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "cesium": "^1.124.0",
     "egm96-universal": "^1.1.1",
     "mgrs": "^2.1.0",
     "pbf": "^5.1.2",
-    "satellite.js": "^6.0.2"
+    "satellite.js": "^6.0.2",
+    "zod": "4.6.4"
   },
   "devDependencies": {
     "prettier": "3.9.6",
@@ -114,6 +118,18 @@
     },
     "./server/providers/openai": {
       "node": "./server/providers/openai.js"
+    },
+    "./server/providers/mcp": {
+      "node": "./server/providers/mcp.js"
+    },
+    "./server/mcp": {
+      "node": "./server/mcp/index.js"
+    },
+    "./server/mcp/stdio": {
+      "node": "./server/mcp/stdio.js"
+    },
+    "./server/agent-bridge": {
+      "node": "./server/agent-bridge/bridge.js"
     },
     "./server/standalone/key-setup": {
       "node": "./server/standalone/key-setup.js"

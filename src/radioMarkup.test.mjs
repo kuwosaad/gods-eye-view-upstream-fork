@@ -8,15 +8,18 @@ const ui = readFileSync(new URL('./ui.js', import.meta.url), 'utf8');
 const radio = readFileSync(new URL('./data/radio.js', import.meta.url), 'utf8');
 const rocketLaunches = readFileSync(new URL('./data/rocketLaunches.js', import.meta.url), 'utf8');
 const realtime = readFileSync(new URL('./voice/gevRealtime.js', import.meta.url), 'utf8');
-const voice = ['tools', 'instructions'].map(name => readFileSync(new URL(`../server/providers/openai/${name}.js`, import.meta.url), 'utf8')).join('\n');
+const voice = [
+  readFileSync(new URL('./agent/toolCatalog.js', import.meta.url), 'utf8'),
+  readFileSync(new URL('../server/providers/openai/instructions.js', import.meta.url), 'utf8'),
+].join('\n');
 const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
 
 /** Parse the Realtime tool array out of the Vite config as real data. */
 function realtimeTools() {
-  const start = voice.indexOf('const GEV_REALTIME_TOOLS = [');
+  const start = voice.indexOf('const GEV_AGENT_TOOL_CATALOG = [');
   const end = voice.indexOf('\n];', start);
   assert.ok(start >= 0 && end > start, 'Realtime tool schema block is missing');
-  const literal = voice.slice(start + 'const GEV_REALTIME_TOOLS = '.length, end + 2);
+  const literal = voice.slice(start + 'const GEV_AGENT_TOOL_CATALOG = '.length, end + 2);
   // The block is pure data; evaluating it beats regexing nested schemas.
   return new Function(`return ${literal};`)();
 }

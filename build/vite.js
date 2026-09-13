@@ -5,6 +5,8 @@ export function createBrowserViteConfig({
   plugins = [],
   googleApiKey,
   cesiumToken,
+  agentToken,
+  agentEnabled = Boolean(agentToken),
   host = 'localhost',
   port = 4173,
 } = {}) {
@@ -29,6 +31,10 @@ export function createBrowserViteConfig({
     define: {
       'import.meta.env.GOOGLE_MAPS_API_KEY': JSON.stringify(googleApiKey),
       'import.meta.env.CESIUM_ION_TOKEN': JSON.stringify(cesiumToken),
+      'import.meta.env.GEV_AGENT_ENABLED': JSON.stringify(agentEnabled),
+      ...(agentEnabled
+        ? { 'import.meta.env.GEV_AGENT_TOKEN': JSON.stringify(agentToken) }
+        : {}),
     },
     build: { chunkSizeWarningLimit: 1500 },
   };

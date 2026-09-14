@@ -64,6 +64,25 @@ test('external sessions remain unclaimed until explicitly claimed', async () => 
   lease.done();
 });
 
+test('session topology changes notify resource-list observers', () => {
+  const bridge = bridgeFor('observed');
+  let changes = 0;
+  const plane = createControlPlane({
+    bridge,
+    onSessionsChanged: () => {
+      changes += 1;
+    },
+  });
+  plane.syncBridgeSessions();
+  const afterConnect = changes;
+  plane.claim('observed', 'owner');
+  plane.share('observed', 'owner', 'guest');
+  plane.closeSession('observed', 'owner');
+  assert.ok(afterConnect >= 1);
+  assert.equal(changes, afterConnect + 3);
+  plane.close();
+});
+
 test('reconnect replaces a stale bridge generation while preserving session state', async () => {
   const bridge = bridgeFor('reconnect');
   const plane = createControlPlane({ bridge, tools: { move: { mutation: true } } });
@@ -81,6 +100,130 @@ test('reconnect replaces a stale bridge generation while preserving session stat
   assert.equal(after.principalId, 'agent-a');
   assert.equal(after.sharedWith.has('agent-b'), true);
   assert.notEqual(plane.registry.get('reconnect').connection, oldEntry);
+});
+
+test('reconnect keeps mutations ordered and versions unique while one is in flight', async () => {
+  const bridge = bridgeFor('reconnect');
+  const order = [];
+  let firstEnteredResolve;
+  let releaseFirstResolve;
+  const firstEntered = new Promise((resolve) => { firstEnteredResolve = resolve; });
+  let first = true;
+  const plane = createControlPlane({
+    bridge,
+    tools: {
+      move: {
+        mutation: true,
+        handler: async ({ args }) => {
+          order.push(args.step);
+          if (first) {
+            first = false;
+            firstEnteredResolve();
+            await new Promise((resolve) => { releaseFirstResolve = resolve; });
+          }
+          return { step: args.step };
+        },
+      },
+    },
+  });
+  // Keep the test deterministic without exposing implementation details from
+  // the bridge: wait until the first handler has entered, then replace it.
+  plane.syncBridgeSessions();
+  plane.claim('reconnect', 'agent-a');
+  const firstCall = plane.dispatch({ tool: 'move', arguments: { sessionId: 'reconnect', step: 1 } }, { callerId: 'agent-a' });
+  await firstEntered;
+  bridge.sessions.set('reconnect', {});
+  plane.syncBridgeSessions();
+  const secondCall = plane.dispatch({ tool: 'move', arguments: { sessionId: 'reconnect', step: 2 } }, { callerId: 'agent-a' });
+  releaseFirstResolve();
+  const [firstResult, secondResult] = await Promise.all([firstCall, secondCall]);
+  assert.deepEqual(order, [1, 2]);
+  assert.equal(firstResult.result.stateVersion, 1);
+  assert.equal(secondResult.result.stateVersion, 2);
+  plane.close();
+});
+
+test('dispatch observes each mutation before the next mutation advances state', async () => {
+  const bridge = bridgeFor('snapshot');
+  const plane = createControlPlane({
+    bridge,
+    getState: async (session) => ({ version: session.stateVersion }),
+    tools: {
+      move: {
+        mutation: true,
+        handler: async ({ args }) => {
+          await new Promise((resolve) => setTimeout(resolve, args.delay));
+          return { step: args.step };
+        },
+      },
+    },
+  });
+  plane.syncBridgeSessions();
+  plane.claim('snapshot', 'agent-a');
+  const first = plane.dispatch(
+    { tool: 'move', arguments: { sessionId: 'snapshot', step: 1, delay: 10 } },
+    { callerId: 'agent-a' },
+  );
+  const second = plane.dispatch(
+    { tool: 'move', arguments: { sessionId: 'snapshot', step: 2, delay: 0 } },
+    { callerId: 'agent-a' },
+  );
+  const [a, b] = await Promise.all([first, second]);
+  assert.deepEqual(a.result.state, { version: 1, stateVersion: 1 });
+  assert.deepEqual(b.result.state, { version: 2, stateVersion: 2 });
+  plane.close();
+});
+
+test('reconnect preserves the active mutation lease and its expiry', () => {
+  const bridge = bridgeFor('reconnect');
+  const plane = createControlPlane({ bridge });
+  plane.syncBridgeSessions();
+  plane.claim('reconnect', 'agent-a');
+  plane.share('reconnect', 'agent-a', 'agent-b');
+  plane.acquireLease('reconnect', 'agent-a', { ttlMs: 1_000 });
+  bridge.sessions.set('reconnect', {});
+  plane.syncBridgeSessions();
+
+  const session = plane.registry.get('reconnect', 'agent-a');
+  assert.equal(session.leaseOwner, 'agent-a');
+  assert.ok(session.leaseExpiresAt > Date.now());
+  assert.throws(
+    () => plane.acquireLease('reconnect', 'agent-b'),
+    { code: 'LEASED' },
+  );
+  plane.close();
+});
+
+test('failed bridge registration does not strand a stale connection generation', () => {
+  const bridge = bridgeFor('reconnect');
+  const registry = new SessionRegistry({ maxSessionsPerPrincipal: 0 });
+  const plane = createControlPlane({ bridge, registry });
+  assert.throws(
+    () => plane.registerBridgeSession('reconnect', { principalId: 'agent-a' }),
+    { code: 'SESSION_QUOTA' },
+  );
+  registry.maxSessionsPerPrincipal = 1;
+  plane.syncBridgeSessions({ principalId: 'agent-a' });
+  assert.equal(plane.registry.get('reconnect', 'agent-a').id, 'reconnect');
+  plane.close();
+});
+
+test('closing the control plane aborts active browser commands', async () => {
+  const bridge = bridgeFor('closing');
+  let seenSignal;
+  bridge.request = (sessionId, name, args, { signal }) => new Promise((resolve, reject) => {
+    seenSignal = signal;
+    signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { code: 'ABORTED' })), { once: true });
+  });
+  const plane = createControlPlane({ bridge, tools: { move: { mutation: true } } });
+  plane.syncBridgeSessions();
+  plane.claim('closing', 'agent-a');
+  const pending = plane.call('move', {}, { callerId: 'agent-a' });
+  await new Promise((resolve) => setImmediate(resolve));
+  plane.close();
+  const result = await pending;
+  assert.equal(seenSignal.aborted, true);
+  assert.equal(result.structuredContent.code, 'ABORTED');
 });
 
 test('control plane preserves ACL isolation and records failures', async () => {

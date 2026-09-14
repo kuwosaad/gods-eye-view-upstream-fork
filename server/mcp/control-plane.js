@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { McpError } from './errors.js';
 import { SessionRegistry } from './session-registry.js';
-import { ToolDispatcher } from './dispatcher.js';
+import { errorResult, textResult, ToolDispatcher } from './dispatcher.js';
 
 /**
  * A deliberately small adapter for the bridge used by the server. The control
@@ -15,6 +15,7 @@ class BridgeConnection extends EventEmitter {
     this.id = id;
     this.generation = bridge.sessions.get(id);
     this.closed = false;
+    this.abortController = new AbortController();
     this.unsubscribe = bridge.subscribe?.(id, (event) => this.emit('message', event));
   }
   send(message) {
@@ -23,11 +24,19 @@ class BridgeConnection extends EventEmitter {
     return this.command(message.name, message.args);
   }
   command(name, args = {}, { signal, mutation = false, callerId } = {}) {
-    return this.bridge.request(this.id, name, args, { signal, mutation, callerId });
+    const requestSignal = signal
+      ? AbortSignal.any([this.abortController.signal, signal])
+      : this.abortController.signal;
+    return this.bridge.request(this.id, name, args, {
+      signal: requestSignal,
+      mutation,
+      callerId,
+    });
   }
   close() {
     if (this.closed) return;
     this.closed = true;
+    this.abortController.abort();
     this.unsubscribe?.();
     this.emit('close');
   }
@@ -50,6 +59,7 @@ export function createControlPlane({
   getHealth = () => null,
   audit = null,
   onEvent = null,
+  onSessionsChanged = null,
   quotaGuard = null,
 } = {}) {
   const resolvedTools = Object.fromEntries(Object.entries(tools).map(([name, tool]) => [
@@ -75,31 +85,69 @@ export function createControlPlane({
     try { audit?.(event); } catch { /* audit hooks must not break commands */ }
     onEvent?.(event);
   };
+  const publishSessionsChanged = () => {
+    try {
+      Promise.resolve(onSessionsChanged?.()).catch(() => {});
+    } catch {
+      // Topology observers cannot break browser session lifecycle operations.
+    }
+  };
 
   const registerBridgeSession = (sessionId, { principalId = null, replace = true } = {}) => {
     if (!bridge?.sessions?.has(sessionId))
       throw new McpError(`Bridge session '${sessionId}' is not connected`, 'SESSION_NOT_FOUND');
     const previous = registry.sessions.get(sessionId);
+    const previousState = previous
+      ? {
+          principalId: previous.principalId,
+          unclaimed: previous.unclaimed,
+          publicSession: previous.publicSession,
+          sharedWith: new Set(previous.sharedWith),
+          mutationState: previous.mutationState,
+          stateVersion: previous.stateVersion,
+          leaseOwner: previous.leaseOwner,
+          leaseExpiresAt: previous.leaseExpiresAt,
+          createdAt: previous.createdAt,
+        }
+      : null;
     const previousConnection = connections.get(sessionId);
     const connection = new BridgeConnection(bridge, sessionId);
+    let session;
+    try {
+      session = registry.register(connection, sessionId, {
+        principalId: previousState?.principalId ?? principalId,
+        replace,
+        unclaimed: previousState?.unclaimed ?? principalId === null,
+        publicSession: previousState?.publicSession,
+        actorPrincipalId: previousState?.principalId ?? principalId,
+        mutationState: previousState?.mutationState,
+      });
+    } catch (error) {
+      connection.close();
+      throw error;
+    }
     connections.set(sessionId, connection);
-    const session = registry.register(connection, sessionId, {
-      principalId: previous?.principalId ?? principalId,
-      replace,
-      unclaimed: previous?.unclaimed ?? principalId === null,
-      publicSession: previous?.publicSession,
-      actorPrincipalId: previous?.principalId ?? principalId,
-    });
-    if (previous) {
-      session.sharedWith = new Set(previous.sharedWith);
-      session.stateVersion = previous.stateVersion;
-      session.leaseOwner = previous.leaseOwner;
+    if (previousState) {
+      session.sharedWith = previousState.sharedWith;
+      session.stateVersion = previousState.stateVersion;
+      session.createdAt = previousState.createdAt;
+      if (previousState.leaseOwner) {
+        const remaining = previousState.leaseExpiresAt === null
+          ? 0
+          : Math.max(0, previousState.leaseExpiresAt - Date.now());
+        if (previousState.leaseExpiresAt === null || remaining > 0)
+          session.acquireLease(previousState.leaseOwner, { ttlMs: remaining });
+      }
     }
     previousConnection?.close();
     connection.once('close', () => {
       if (connections.get(sessionId) === connection) connections.delete(sessionId);
-      if (registry.sessions.get(sessionId) === session) registry.remove(sessionId);
+      if (registry.sessions.get(sessionId) === session) {
+        registry.remove(sessionId);
+        publishSessionsChanged();
+      }
     });
+    publishSessionsChanged();
     return session;
   };
 
@@ -136,15 +184,30 @@ export function createControlPlane({
     syncBridgeSessions();
     const callerId = options.callerId ?? 'anonymous';
     const startedAt = Date.now();
-    const response = await dispatcher.callTool(name, args, { ...options, callerId });
+    let response;
+    let observedState;
+    try {
+      const raw = await dispatcher.executeRaw(name, args, {
+        ...options,
+        callerId,
+        afterMutation: resolvedTools[name]?.mutation
+          ? async (session) => getState(session)
+          : null,
+      });
+      observedState = raw.observedState;
+      response = textResult(raw.data, { stateVersion: raw.stateVersion });
+    } catch (error) {
+      response = errorResult(error);
+    }
     const sessionId = args.sessionId ?? args.session_id;
     let state;
     if (!response.isError && resolvedTools[name]?.mutation) {
       try {
-        const session = registry.resolve(sessionId, callerId);
-        state = await getState(session);
-        if (state && typeof state === 'object')
+        state = observedState;
+        if (state && typeof state === 'object') {
+          const session = registry.resolve(sessionId, callerId);
           state = { ...state, stateVersion: session.stateVersion };
+        }
       } catch (error) {
         record({ type: 'state-observation-failed', name, callerId, error });
       }
@@ -175,10 +238,14 @@ export function createControlPlane({
     syncBridgeSessions();
     const startedAt = Date.now();
     try {
-      const raw = await dispatcher.executeRaw(name, args, { ...options, callerId });
+      const raw = await dispatcher.executeRaw(name, args, {
+        ...options,
+        callerId,
+        afterMutation: (session) => getState(session),
+      });
       let state;
       if (raw.tool.mutation && raw.session) {
-        state = await getState(raw.session);
+        state = raw.observedState;
         if (state && typeof state === 'object')
           state = { ...state, stateVersion: raw.stateVersion };
       }
@@ -232,11 +299,22 @@ export function createControlPlane({
     return { uri, mimeType: 'application/json', text: JSON.stringify(value) };
   };
 
-  const claim = (sessionId, callerId) => registry.claim(sessionId, callerId);
+  const claim = (sessionId, callerId) => {
+    const session = registry.claim(sessionId, callerId);
+    publishSessionsChanged();
+    return session;
+  };
   const join = (sessionId, callerId) => registry.join(sessionId, callerId);
-  const share = (sessionId, callerId, invitedPrincipalId) =>
-    registry.share(sessionId, callerId, invitedPrincipalId);
-  const closeSession = (sessionId, callerId) => registry.close(sessionId, callerId);
+  const share = (sessionId, callerId, invitedPrincipalId) => {
+    const session = registry.share(sessionId, callerId, invitedPrincipalId);
+    publishSessionsChanged();
+    return session;
+  };
+  const closeSession = (sessionId, callerId) => {
+    const closed = registry.close(sessionId, callerId);
+    publishSessionsChanged();
+    return closed;
+  };
   const acquireLease = (sessionId, callerId, options) => {
     registry.get(sessionId, callerId);
     return registry.get(sessionId).acquireLease(callerId, options);
@@ -248,6 +326,8 @@ export function createControlPlane({
     session.leaseOwner = null;
     if (session.leaseTimer) clearTimeout(session.leaseTimer);
     session.leaseTimer = null;
+    session.leaseExpiresAt = null;
+    session.leaseGeneration += 1;
   };
 
   const close = () => {

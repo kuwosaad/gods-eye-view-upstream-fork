@@ -75,6 +75,7 @@ export function createAgentIntegrationPlugin({
       ...runtimeOptions,
       audit: (event) => onAudit?.(event),
       onResourceUpdated: (uri) => middleware?.notifyResourceUpdated(uri),
+      onResourceListChanged: () => middleware?.notifyResourceListChanged(),
     });
     const configuredServerTools = Array.isArray(mcpOptions.serverTools)
       ? mcpOptions.serverTools
@@ -90,6 +91,8 @@ export function createAgentIntegrationPlugin({
         googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || '',
       },
     });
+    const serverTools = [...imageryTools, ...configuredServerTools];
+    runtime.registerServerTools(serverTools);
     middleware = createMcpMiddleware({
       token,
       ...mcpOptions,
@@ -102,7 +105,7 @@ export function createAgentIntegrationPlugin({
       getState: runtime.getState,
       resources: { ...runtime.resourceCallbacks, subscribe: true },
       sessionManagement: runtime.sessionManagement,
-      serverTools: [...imageryTools, ...configuredServerTools],
+      serverTools,
     });
     server.middlewares.use(MCP_PATH, middleware);
     server.agentBridge = bridge;

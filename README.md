@@ -369,9 +369,12 @@ See [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md) for the authoritative runti
 ## 🧭 Agent Control Through MCP
 
 God's Eye View includes one local MCP server so compatible agents can observe
-and control a live globe through the same 28 actions as voice control. Set
-`GEV_AGENT_TOKEN` when starting the server, open the app in a browser, then
-connect an MCP client to `http://localhost:4173/mcp`. See the
+and control a live globe through the same 28 actions as voice control. Set an
+explicit `GEV_AGENT_TOKEN` when starting the server, or set
+`GEV_AGENT_ENABLED=1` to generate a random owner-only runtime token in a
+protected temporary file. You can set `GEV_AGENT_TOKEN_FILE` to choose that
+file's location. Open the app in a browser, then connect an MCP client to
+`http://localhost:4173/mcp`. See the
 [MCP setup and status guide](docs/AGENT-MCP.md) and the
 [phase plan](docs/AGENT-MCP-PLAN.md).
 

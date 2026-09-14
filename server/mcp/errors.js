@@ -9,7 +9,7 @@ export class McpError extends Error {
 
 export class TimeoutError extends McpError {
   constructor(message = 'Command timed out') {
-    super(message, 'TIMEOUT');
+    super(message, 'REQUEST_TIMEOUT');
     this.name = 'TimeoutError';
   }
 }

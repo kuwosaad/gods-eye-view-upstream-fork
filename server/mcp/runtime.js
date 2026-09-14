@@ -26,8 +26,16 @@ export function createMcpRuntime({
   artifactOptions,
   onEvent,
   onResourceUpdated,
+  onResourceListChanged,
   browserUrl = null,
+  reservationTtlMs = 15 * 60_000,
+  maxReservations = 64,
+  now = Date.now,
 } = {}) {
+  if (!Number.isFinite(reservationTtlMs) || reservationTtlMs <= 0)
+    throw new RangeError('reservationTtlMs must be positive');
+  if (!Number.isInteger(maxReservations) || maxReservations < 1)
+    throw new RangeError('maxReservations must be a positive integer');
   const agentBridge = bridge || (bridgeOptions ? createAgentBridge(bridgeOptions) : null);
   const resolvedQuota = quotaGuard || (quota ? createQuotaGuard(quota) : null);
   const resolvedArtifactStore = artifactStore || (artifactRoot ? new ArtifactStore({ root: artifactRoot, ...artifactOptions }) : null);
@@ -37,11 +45,14 @@ export function createMcpRuntime({
       description: entry.description,
       inputSchema: entry.parameters,
       mutation: info.access === 'mutation' || info.readOnly === false,
+      sessionRequired: true,
       costClass: info.costClass,
       ...(tools[entry.name] || {}),
     }];
   }));
-  Object.assign(catalogTools, tools);
+  for (const [name, tool] of Object.entries(tools)) {
+    if (!catalogTools[name]) catalogTools[name] = tool;
+  }
   if (!catalogTools.gev_capture_view) {
     catalogTools.gev_capture_view = {
       description: 'Capture the current God’s Eye View viewport.',
@@ -73,13 +84,33 @@ export function createMcpRuntime({
   const plane = createControlPlane({
     registry, bridge: agentBridge, tools: catalogTools,
     getState: stateReader, getHealth, audit: auditEvent, quotaGuard: resolvedQuota,
+    onSessionsChanged: onResourceListChanged,
   });
   const reservations = new Map();
+  const pruneReservations = () => {
+    const timestamp = now();
+    for (const [sessionId, reservation] of reservations) {
+      if (reservation.expiresAt <= timestamp) reservations.delete(sessionId);
+    }
+  };
+  const reserve = (sessionId, principalId) => {
+    pruneReservations();
+    if (!reservations.has(sessionId) && reservations.size >= maxReservations)
+      throw Object.assign(new Error('Session reservation capacity reached'), {
+        code: 'SESSION_QUOTA',
+      });
+    reservations.set(sessionId, {
+      principalId,
+      expiresAt: now() + reservationTtlMs,
+    });
+  };
   const sync = () => {
+    pruneReservations();
     const sessions = plane.syncBridgeSessions();
-    for (const [sessionId, principalId] of reservations) {
+    for (const [sessionId, reservation] of reservations) {
       const session = plane.registry.sessions.get(sessionId);
-      if (session?.principalId === null) plane.claim(sessionId, principalId);
+      if (session?.principalId === null)
+        plane.claim(sessionId, reservation.principalId);
     }
     return sessions;
   };
@@ -146,11 +177,23 @@ export function createMcpRuntime({
     const requested = sessionId ?? name ?? `session-${randomUUID().slice(0, 12)}`;
     if (typeof requested !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/.test(requested))
       throw new TypeError('sessionId must be a valid browser session name');
-    const prior = reservations.get(requested);
-    if (prior && prior !== principalId) throw Object.assign(new Error('Session is reserved by another principal'), { code: 'ACCESS_DENIED' });
-    reservations.set(requested, principalId);
     sync();
     const connected = plane.registry.sessions.get(requested);
+    if (connected) {
+      if (connected.principalId !== principalId) {
+        throw Object.assign(new Error('Session belongs to another principal'), {
+          code: connected.unclaimed ? 'SESSION_EXISTS' : 'ACCESS_DENIED',
+        });
+      }
+      reserve(requested, principalId);
+    } else {
+      const prior = reservations.get(requested);
+      if (prior && prior.principalId !== principalId)
+        throw Object.assign(new Error('Session is reserved by another principal'), {
+          code: 'ACCESS_DENIED',
+        });
+      reserve(requested, principalId);
+    }
     return {
       sessionId: requested, principalId,
       status: connected?.principalId === principalId ? 'connected' : 'waiting',
@@ -163,8 +206,24 @@ export function createMcpRuntime({
     sync();
     const session = plane.registry.get(sessionId);
     // An unclaimed browser is private: the first explicit MCP join claims it.
-    if (session.principalId === null && session.unclaimed) return sessionSummary(plane.claim(sessionId, principalId), principalId);
-    return sessionSummary(plane.join(sessionId, principalId), principalId);
+    const shouldClaim = session.principalId === null && session.unclaimed;
+    const priorReservation = reservations.get(sessionId);
+    if (shouldClaim) reserve(sessionId, principalId);
+    let joined;
+    try {
+      joined = shouldClaim
+        ? plane.claim(sessionId, principalId)
+        : plane.join(sessionId, principalId);
+      if (!shouldClaim && joined.principalId === principalId)
+        reserve(sessionId, principalId);
+    } catch (error) {
+      if (shouldClaim) {
+        if (priorReservation) reservations.set(sessionId, priorReservation);
+        else reservations.delete(sessionId);
+      }
+      throw error;
+    }
+    return sessionSummary(joined, principalId);
   };
   const sessionManagement = {
     createSession,
@@ -173,10 +232,12 @@ export function createMcpRuntime({
       plane.share(sessionId, ctx.principalId, invitedPrincipalId);
       return { sessionId, sharedWith: invitedPrincipalId };
     },
-    closeSession: ({ sessionId }, ctx) => ({
-      sessionId,
-      closed: plane.closeSession(sessionId, ctx.principalId),
-    }),
+    closeSession: ({ sessionId }, ctx) => {
+      const closed = plane.closeSession(sessionId, ctx.principalId);
+      reservations.delete(sessionId);
+      agentBridge?.disconnect?.(sessionId);
+      return { sessionId, closed };
+    },
     acquireLease: ({ sessionId, ttlMs }, ctx) => {
       plane.acquireLease(sessionId, ctx.principalId, { ttlMs });
       return { sessionId, leaseOwner: ctx.principalId, ttlMs: ttlMs ?? 0 };
@@ -187,6 +248,7 @@ export function createMcpRuntime({
     },
   };
   const close = async () => {
+    reservations.clear();
     resources.clearCache();
     plane.close();
     await resolvedArtifactStore?.close?.();
@@ -201,5 +263,25 @@ export function createMcpRuntime({
     sessionManagement, joinSession, shareSession: sessionManagement.shareSession,
     closeSession: sessionManagement.closeSession, acquireLease: sessionManagement.acquireLease,
     releaseLease: sessionManagement.releaseLease, auditLog, artifactStore: resolvedArtifactStore, close,
+    registerServerTools: (entries = []) => {
+      for (const tool of entries) {
+        if (!tool?.name || typeof tool.handler !== 'function')
+          throw new TypeError('Server tool requires a name and handler');
+        if (plane.dispatcher.tools.has(tool.name))
+          throw new TypeError(`Duplicate server tool '${tool.name}'`);
+        const handler = tool.handler;
+        const registered = {
+          ...tool,
+          sessionRequired: tool.sessionRequired ?? true,
+          handler: ({ args, session, signal, callerId }) =>
+            handler(
+              { ...args, ...(session ? { sessionId: session.id } : {}) },
+              { signal, principalId: callerId, session },
+            ),
+        };
+        catalogTools[tool.name] = registered;
+        plane.dispatcher.tools.set(tool.name, registered);
+      }
+    },
   });
 }

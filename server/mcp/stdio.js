@@ -8,7 +8,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { z } from 'zod';
 
 function localMcpUrl(value) {
-  const url = new URL(value || 'http://127.0.0.1:5173/mcp');
+  const url = new URL(value || 'http://127.0.0.1:4173/mcp');
   if (!['http:', 'https:'].includes(url.protocol) || !['localhost', '127.0.0.1', '::1'].includes(url.hostname)) throw new TypeError('stdio MCP URL must target localhost');
   if (url.pathname !== '/mcp') throw new TypeError('stdio MCP URL must use /mcp');
   return url;

@@ -1,13 +1,34 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   ALLOCATION_TEST_FILES,
   allocationTestArgs,
   assertNode24AllocationRuntime,
   buildUnitTestPlan,
   isCalibratedAllocationRuntime,
+  discoverUnitTestFiles,
 } from '../scripts/run-unit-tests.mjs';
+
+test('unit discovery includes tests under src and server', () => {
+  const root = mkdtempSync(join(tmpdir(), 'gev-unit-discovery-'));
+  try {
+    mkdirSync(join(root, 'src'), { recursive: true });
+    mkdirSync(join(root, 'server', 'mcp'), { recursive: true });
+    writeFileSync(join(root, 'src', 'client.test.mjs'), '');
+    writeFileSync(join(root, 'server', 'mcp', 'runtime.test.mjs'), '');
+    assert.deepEqual(discoverUnitTestFiles(root), [
+      'server/mcp/runtime.test.mjs',
+      'src/client.test.mjs',
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('unit runner serializes only GC-bracketed allocation microbenchmarks', () => {
   const ordinary = [

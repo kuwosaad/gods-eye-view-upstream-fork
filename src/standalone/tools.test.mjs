@@ -19,3 +19,9 @@ test('standalone agent bootstrap exposes and tears down the MCP connection indic
   );
   assert.ok(agentBlock.includes('defer(() => connectionIndicator?.destroy())'));
 });
+
+test('invalid agentSession query values fall back without aborting application bootstrap', () => {
+  assert.match(source, /typeof querySession === 'string'/);
+  assert.match(source, /AGENT_SESSION_RE\.test\(querySession\)/);
+  assert.match(source, /\? querySession\s*:\s*'default'/);
+});

@@ -22,6 +22,7 @@ const ERROR_CODES = new Set([
   'QUEUE_FULL', 'INVALID_ARGUMENTS', 'QUOTA_EXCEEDED', 'SESSION_REQUIRED',
   'ACCESS_DENIED', 'SESSION_EXISTS', 'SESSION_QUOTA', 'RESOURCE_NOT_FOUND',
   'LEASE_OWNER_REQUIRED', 'CAPABILITY_UNAVAILABLE', 'REMOTE_ERROR',
+  'ARTIFACT_NOT_FOUND', 'INVALID_ARTIFACT', 'INVALID_ARTIFACT_ID',
 ]);
 
 const OPEN = 1;
@@ -147,6 +148,7 @@ export function createAgentBrowserClient({
   let destroyed = false;
   let reconnectTimer = null;
   let attempts = 0;
+  let terminalClose = false;
   const active = new Map();
   const endpoint = url || defaultUrl(path, sessionId, token, location);
 
@@ -302,6 +304,7 @@ export function createAgentBrowserClient({
   const scheduleReconnect = () => {
     if (
       destroyed ||
+      terminalClose ||
       !reconnect ||
       attempts >= maxReconnectAttempts ||
       reconnectTimer
@@ -331,7 +334,7 @@ export function createAgentBrowserClient({
       });
       state({ type: 'open' });
     };
-    const closed = () => {
+    const closed = (event = {}) => {
       if (socket !== current) return;
       socket = null;
       // A response can only be delivered on the socket that issued the
@@ -339,7 +342,8 @@ export function createAgentBrowserClient({
       // leave stale actions mutating the new session.
       for (const controller of active.values()) controller.abort();
       active.clear();
-      state({ type: 'closed' });
+      terminalClose = Number(event.code) === 4002;
+      state({ type: 'closed', terminal: terminalClose });
       scheduleReconnect();
     };
     const failed = (event) => {

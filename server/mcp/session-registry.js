@@ -19,15 +19,28 @@ export class MutationLease {
 }
 
 export class GevSession {
-  constructor(id, connection, { maxPendingMutations = 100, principalId = null, publicSession = false, unclaimed = false } = {}) {
+  constructor(id, connection, {
+    maxPendingMutations = 100,
+    principalId = null,
+    publicSession = false,
+    unclaimed = false,
+    mutationState = null,
+  } = {}) {
     this.id = id;
     this.connection = connection;
-    this.mutationTail = Promise.resolve();
+    // A browser reconnect replaces the GevSession object. Keep the queue and
+    // version counter in a separate object so an in-flight mutation cannot be
+    // overtaken, or assigned the same version, by the replacement session.
+    this.mutationState = mutationState || {
+      tail: Promise.resolve(),
+      pending: 0,
+      version: 0,
+    };
     this.leaseOwner = null;
     this.leaseTimer = null;
+    this.leaseExpiresAt = null;
+    this.leaseGeneration = 0;
     this.maxPendingMutations = maxPendingMutations;
-    this.pendingMutations = 0;
-    this.stateVersion = 0;
     this.closed = false;
     this.principalId = principalId;
     this.sharedWith = new Set();
@@ -35,7 +48,25 @@ export class GevSession {
     this.unclaimed = unclaimed;
     this.createdAt = new Date().toISOString();
   }
-  runMutation(task, { signal } = {}) {
+  get mutationTail() {
+    return this.mutationState.tail;
+  }
+  set mutationTail(value) {
+    this.mutationState.tail = value;
+  }
+  get pendingMutations() {
+    return this.mutationState.pending;
+  }
+  set pendingMutations(value) {
+    this.mutationState.pending = value;
+  }
+  get stateVersion() {
+    return this.mutationState.version;
+  }
+  set stateVersion(value) {
+    this.mutationState.version = value;
+  }
+  runMutation(task, { signal, afterMutation = null } = {}) {
     if (this.closed)
       return Promise.reject(new McpError('Session is closed', 'SESSION_CLOSED'));
     if (this.pendingMutations >= this.maxPendingMutations)
@@ -43,16 +74,26 @@ export class GevSession {
         new McpError('Session mutation queue is full', 'QUEUE_FULL'),
       );
     this.pendingMutations += 1;
-    const execute = () => this.closed
-      ? Promise.reject(new McpError('Session is closed', 'SESSION_CLOSED'))
-      : signal?.aborted ? Promise.reject(new McpError('Command cancelled', 'ABORTED')) : task();
+    const execute = async () => {
+      if (this.closed)
+        throw new McpError('Session is closed', 'SESSION_CLOSED');
+      if (signal?.aborted)
+        throw new McpError('Command cancelled', 'ABORTED');
+      const value = await task();
+      if (!afterMutation) return value;
+      // Advance the version before observing state, while the queue still
+      // owns this slot. The next mutation cannot run until the observation
+      // completes, so its snapshot cannot overtake this one.
+      this.stateVersion += 1;
+      return { value, observed: await afterMutation(this, value) };
+    };
     const run = this.mutationTail.then(
       execute,
       execute,
     );
     const tracked = run
       .then((value) => {
-        this.stateVersion += 1;
+        if (!afterMutation) this.stateVersion += 1;
         return value;
       })
       .finally(() => {
@@ -71,9 +112,14 @@ export class GevSession {
       );
     if (this.leaseTimer) clearTimeout(this.leaseTimer);
     this.leaseOwner = owner;
+    this.leaseExpiresAt = ttlMs > 0 ? Date.now() + ttlMs : null;
+    const generation = ++this.leaseGeneration;
     const release = () => {
-      if (this.leaseOwner === owner) this.leaseOwner = null;
+      if (this.leaseGeneration !== generation || this.leaseOwner !== owner)
+        return;
+      this.leaseOwner = null;
       this.leaseTimer = null;
+      this.leaseExpiresAt = null;
     };
     const timer = ttlMs > 0
       ? setTimeout(() => release(), ttlMs)
@@ -85,8 +131,10 @@ export class GevSession {
     if (this.closed) return;
     this.closed = true;
     if (this.leaseTimer) clearTimeout(this.leaseTimer);
+    this.leaseGeneration += 1;
     this.leaseTimer = null;
     this.leaseOwner = null;
+    this.leaseExpiresAt = null;
     this.connection.close?.();
   }
   canAccess(principalId = 'anonymous') {
@@ -118,6 +166,7 @@ export class SessionRegistry {
     const session = new GevSession(id, connection, {
       maxPendingMutations:
         options.maxPendingMutations ?? this.maxPendingMutations,
+      mutationState: options.mutationState ?? replacing?.mutationState,
       principalId,
       publicSession: options.publicSession === true,
       unclaimed:

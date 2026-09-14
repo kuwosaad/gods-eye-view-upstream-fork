@@ -2,6 +2,12 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
+import {
+  SubscribeRequestSchema,
+  UnsubscribeRequestSchema,
+  ErrorCode,
+  McpError,
+} from '@modelcontextprotocol/sdk/types.js';
 import { GEV_AGENT_TOOL_CATALOG } from '../../src/agent/toolCatalog.js';
 import { GEV_ERROR_CODES } from '../agent-bridge/protocol.js';
 
@@ -209,7 +215,54 @@ function artifactContents(uri, value) {
 }
 
 function makeServer({ catalog, dispatch, listSessions, getState, resources = {}, principalId, sessionManagement = {}, serverTools = [] }) {
-  const server = new McpServer({ name: 'gods-eye-view', version: '0.1.1' });
+  const subscriptions = new Set();
+  const supportsSubscriptions = resources.subscribe === true;
+  const server = new McpServer(
+    { name: 'gods-eye-view', version: '0.1.1' },
+    supportsSubscriptions
+      ? { capabilities: { resources: { subscribe: true } } }
+      : undefined,
+  );
+  if (supportsSubscriptions) {
+    const authorizedResource = async (uri) => {
+      if (typeof uri !== 'string') return false;
+      const match = /^gev:\/\/sessions\/([^/?#]+)\/(state|layers|entities|annotations)$/.exec(uri);
+      const artifactMatch = /^gev:\/\/sessions\/([^/?#]+)\/artifacts\/([^/?#]+)$/.exec(uri);
+      if (!match && !artifactMatch) return false;
+      let sessionId;
+      try {
+        sessionId = decodeURIComponent((match || artifactMatch)[1]);
+      } catch {
+        return false;
+      }
+      const kind = artifactMatch ? 'artifacts' : match[2];
+      if (typeof resources[kind] !== 'function') return false;
+      let sessions;
+      try {
+        sessions = await listSessions({ principalId });
+      } catch {
+        return false;
+      }
+      return (
+        Array.isArray(sessions) &&
+        sessions.some(
+          ({ id, access }) =>
+            String(id) === sessionId && access !== 'unclaimed',
+        )
+      );
+    };
+    server.server.setRequestHandler(SubscribeRequestSchema, async ({ params }) => {
+      if (!(await authorizedResource(params?.uri)))
+        throw new McpError(ErrorCode.InvalidParams, 'Resource is not available');
+      subscriptions.add(params.uri);
+      return {};
+    });
+    server.server.setRequestHandler(UnsubscribeRequestSchema, ({ params }) => {
+      subscriptions.delete(params.uri);
+      return {};
+    });
+  }
+  Object.defineProperty(server, 'gevSubscriptions', { value: subscriptions });
   const invoke = async (name, args, extra) => {
     const sessionId = args?.sessionId ?? args?.session_id;
     const call = await dispatch(
@@ -279,8 +332,18 @@ function makeServer({ catalog, dispatch, listSessions, getState, resources = {},
   for (const kind of ['state', 'layers', 'entities', 'annotations']) {
     const callback = resources[kind];
     if (typeof callback !== 'function') continue;
-    const template = new ResourceTemplate(`gev://sessions/{sessionId}/${kind}`, { list: undefined });
-    server.registerResource(`gev_${kind}`, template, { description: `Current God’s Eye View ${kind}.`, mimeType: 'application/json', ...(resources.subscribe ? { subscribe: true } : {}) }, async (uri, variables) => {
+    const template = new ResourceTemplate(`gev://sessions/{sessionId}/${kind}`, {
+      list: async () => ({
+        resources: (await listSessions({ principalId }))
+          .filter(({ access }) => access !== 'unclaimed')
+          .map(({ id }) => ({
+            uri: `gev://sessions/${encodeURIComponent(id)}/${kind}`,
+            name: `God's Eye View ${kind} for ${id}`,
+            mimeType: 'application/json',
+          })),
+      }),
+    });
+    server.registerResource(`gev_${kind}`, template, { description: `Current God’s Eye View ${kind}.`, mimeType: 'application/json' }, async (uri, variables) => {
       try { return resourceContents(uri.href, await callback(String(variables.sessionId), { principalId })); }
       catch (error) { throw publicError(error, 'Resource read failed'); }
     });
@@ -313,11 +376,26 @@ function makeServer({ catalog, dispatch, listSessions, getState, resources = {},
   for (const tool of entries) {
     if (!tool?.name || reserved.has(tool.name) || typeof tool.handler !== 'function') throw new TypeError(`Invalid or duplicate server MCP tool: ${tool?.name || '(empty)'}`);
     reserved.add(tool.name);
-    const inputSchema = tool.inputSchema?.properties ? zodShape(tool.inputSchema) : (tool.inputSchema || {});
+    const inputSchema = tool.inputSchema?.properties
+      ? zodShape(tool.inputSchema)
+      : { ...(tool.inputSchema || {}) };
+    inputSchema.sessionId ??= z.string().optional();
     server.registerTool(tool.name, { description: tool.description || '', inputSchema, ...(tool.outputSchema ? { outputSchema: tool.outputSchema } : {}) }, async (args, extra) => {
       let value;
       try {
-        value = await tool.handler(args || {}, { signal: extra?.signal, principalId });
+        const call = await dispatch(
+          {
+            id: randomUUID(),
+            sessionId: args?.sessionId,
+            tool: tool.name,
+            arguments: args || {},
+          },
+          { signal: extra?.signal, callerId: principalId, principalId },
+        );
+        if (call?.ok === false || call?.error)
+          return failed(publicError(call.error, 'Server tool execution failed'));
+        const dispatched = call?.result === undefined ? call : call.result;
+        value = dispatched?.data === undefined ? dispatched : dispatched.data;
       } catch (error) {
         return failed(publicError(error, 'Server tool execution failed'));
       }
@@ -408,6 +486,13 @@ export function createMcpMiddleware({
         return;
       }
     }
+    // The request body may have been streaming while shutdown started. Do not
+    // allocate a new MCP server after the middleware has begun closing.
+    if (closed) {
+      res.statusCode = 503;
+      res.end('MCP server is shutting down');
+      return;
+    }
     const sessionHeader = req.headers?.['mcp-session-id'];
     let pair = sessionHeader && transports.get(String(sessionHeader));
     if (sessionHeader && !pair) {
@@ -458,11 +543,19 @@ export function createMcpMiddleware({
       }
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (sessionId) => {
+          if (closed || pair.closed) return;
+          transports.set(sessionId, pair);
+          pendingInitializations.delete(pair);
+        },
       });
-      pair = { server, transport, principalId };
+      pair = { server, transport, principalId, closed: false };
       pendingInitializations.add(pair);
       transport.onclose = () => {
-        if (transport.sessionId) transports.delete(transport.sessionId);
+        pair.closed = true;
+        if (transport.sessionId && transports.get(transport.sessionId) === pair) {
+          transports.delete(transport.sessionId);
+        }
         pendingInitializations.delete(pair);
       };
       try {
@@ -482,6 +575,7 @@ export function createMcpMiddleware({
       res.end('MCP session is not initialized');
       return;
     }
+    const createdPair = !sessionHeader;
     try {
       await pair.transport.handleRequest(req, res, body);
     } catch (error) {
@@ -490,8 +584,23 @@ export function createMcpMiddleware({
         res.end('MCP request failed');
       }
     }
-    if (pair.transport.sessionId)
-      transports.set(pair.transport.sessionId, pair);
+    // An invalid initialize request can make it through the SDK with a 400
+    // response without ever assigning a session ID. Release that temporary
+    // pair or repeated malformed requests can exhaust the session limit.
+    if (createdPair && !pair.transport.sessionId) {
+      pendingInitializations.delete(pair);
+      pair.closed = true;
+      await pair.transport.close().catch(() => {});
+      await pair.server.close().catch(() => {});
+    }
+    const sessionId = pair.transport.sessionId;
+    if (!closed && !pair.closed && sessionId) {
+      const current = transports.get(sessionId);
+      if (!current || current === pair) transports.set(sessionId, pair);
+      pendingInitializations.delete(pair);
+    } else if (pair.closed || closed) {
+      pendingInitializations.delete(pair);
+    }
   };
   handler.close = async () => {
     closed = true;
@@ -507,9 +616,38 @@ export function createMcpMiddleware({
     transports.clear();
     pendingInitializations.clear();
   };
-  handler.notifyResourceUpdated = async (uri) => Promise.all(
-    [...transports.values()].map(({ server }) => server.server.sendResourceUpdated({ uri })),
-  );
+  handler.notifyResourceUpdated = async (uri) => {
+    const subscribers = [...transports.entries()].filter(([, pair]) =>
+      pair.server.gevSubscriptions?.has(uri),
+    );
+    await Promise.all(subscribers.map(async ([sessionId, pair]) => {
+      try {
+        await pair.server.server.sendResourceUpdated({ uri });
+      } catch {
+        // A client can disappear between the subscriber check and the send.
+        // Drop that transport so its failed notification cannot fail the
+        // completed browser mutation or consume a session slot forever.
+        if (transports.get(sessionId) === pair) transports.delete(sessionId);
+        pendingInitializations.delete(pair);
+        await Promise.resolve(pair.transport?.close?.()).catch(() => {});
+        await Promise.resolve(pair.server?.close?.()).catch(() => {});
+      }
+    }));
+  };
+  handler.notifyResourceListChanged = async () => {
+    await Promise.all(
+      [...transports.entries()].map(async ([sessionId, pair]) => {
+        try {
+          await pair.server.server.sendResourceListChanged();
+        } catch {
+          if (transports.get(sessionId) === pair) transports.delete(sessionId);
+          pendingInitializations.delete(pair);
+          await Promise.resolve(pair.transport?.close?.()).catch(() => {});
+          await Promise.resolve(pair.server?.close?.()).catch(() => {});
+        }
+      }),
+    );
+  };
   return handler;
 }
 
@@ -524,4 +662,4 @@ export function createMcpPlugin(options = {}) {
   };
 }
 
-export { zodShape, authorized, captureResult };
+export { zodShape, authorized, captureResult, publicError };

@@ -52,6 +52,25 @@ test('returns MCP image content and capture provenance', async () => {
   assert.equal('dataUrl' in result, false);
 });
 
+test('honours the advertised webp capture format', async () => {
+  const { viewer, documentRef, target } = environment({
+    dataUrl: 'data:image/webp;base64,ZmFrZQ==',
+  });
+  let requestedMimeType;
+  target.toDataURL = (mimeType) => {
+    requestedMimeType = mimeType;
+    return 'data:image/webp;base64,ZmFrZQ==';
+  };
+  const result = await captureCesiumViewport({
+    viewer,
+    documentRef,
+    format: 'webp',
+    requireFresh: false,
+  });
+  assert.equal(requestedMimeType, 'image/webp');
+  assert.equal(result.mimeType, 'image/webp');
+});
+
 test('rejects captures over encoded byte limit', async () => {
   const env = environment({
     dataUrl: `data:image/jpeg;base64,${'A'.repeat(100)}`,

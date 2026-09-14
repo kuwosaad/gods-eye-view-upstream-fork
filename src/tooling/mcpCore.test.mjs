@@ -7,6 +7,7 @@ import {
   TimeoutError,
   ToolDispatcher,
 } from '../../server/mcp/index.js';
+import { errorResult } from '../../server/mcp/dispatcher.js';
 
 function fakeTransport() {
   const sent = [];
@@ -51,6 +52,58 @@ test('browser commands time out and can be cancelled', async () => {
   controller.abort();
   await assert.rejects(pending, AbortError);
   assert.equal(transport.sent.at(-1).type, 'gev:cancel');
+});
+
+test('timeouts and quota details keep their stable public contract', () => {
+  assert.equal(new TimeoutError().code, 'REQUEST_TIMEOUT');
+  const result = errorResult({
+    code: 'QUOTA_EXCEEDED',
+    details: { calls: 2, bytes: 3, runtimeMs: 4 },
+  });
+  assert.deepEqual(result.structuredContent.details, {
+    calls: 2,
+    bytes: 3,
+    runtimeMs: 4,
+  });
+});
+
+test('direct dispatch collapses unknown error codes to MCP_ERROR', () => {
+  const unknown = errorResult({
+    code: 'provider-secret-code',
+    message: 'upstream details',
+  });
+  assert.equal(unknown.structuredContent.code, 'MCP_ERROR');
+  assert.equal(unknown.structuredContent.error, 'MCP request failed');
+
+  const inherited = errorResult({ code: 'toString' });
+  assert.equal(inherited.structuredContent.code, 'MCP_ERROR');
+});
+
+test('direct dispatch preserves documented public error codes', () => {
+  const stableCodes = [
+    'INVALID_REQUEST',
+    'INVALID_ARGUMENTS',
+    'TOOL_NOT_FOUND',
+    'SESSION_NOT_FOUND',
+    'SESSION_CLOSED',
+    'DISCONNECTED',
+    'REQUEST_TIMEOUT',
+    'ABORTED',
+    'QUEUE_FULL',
+    'LEASED',
+    'PROVIDER_FAILURE',
+    'ACCESS_DENIED',
+    'SESSION_REQUIRED',
+    'QUOTA_EXCEEDED',
+    'SESSION_EXISTS',
+    'SESSION_QUOTA',
+    'RESOURCE_NOT_FOUND',
+    'ARTIFACT_NOT_FOUND',
+    'INVALID_ARTIFACT',
+    'INVALID_ARTIFACT_ID',
+  ];
+  for (const code of stableCodes)
+    assert.equal(errorResult({ code }).structuredContent.code, code);
 });
 
 test('settled commands remove abort listeners and ignore late aborts', async () => {
@@ -217,6 +270,19 @@ test('leases expire and disconnect closes the session safely', async () => {
   assert.doesNotThrow(() => session.acquireLease('agent-b'));
   browser.close();
   assert.equal(registry.list().length, 0);
+});
+
+test('an older lease handle cannot release a same-owner renewal', () => {
+  const registry = new SessionRegistry();
+  const session = registry.register(
+    new BrowserConnection(fakeTransport()),
+    'main',
+  );
+  const first = session.acquireLease('agent-a');
+  session.acquireLease('agent-a');
+  first.done();
+  assert.equal(session.leaseOwner, 'agent-a');
+  assert.throws(() => session.acquireLease('agent-b'), { code: 'LEASED' });
 });
 
 test('principals are isolated until a session is shared', () => {

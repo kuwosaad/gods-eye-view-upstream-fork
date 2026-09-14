@@ -27,9 +27,9 @@ class FakeWebSocket {
     this.readyState = 1;
     this.emit('open');
   }
-  close() {
+  close(code) {
     this.readyState = 3;
-    this.emit('close');
+    this.emit('close', { code });
   }
 }
 
@@ -132,4 +132,15 @@ test('closes oversized messages and cleans up on destroy', () => {
   assert.equal(socket.readyState, 3);
   gev.destroy();
   assert.equal(gev.isDestroyed, true);
+});
+
+test('owner-closed sessions do not reconnect until the page is explicitly reopened', async () => {
+  const gev = client({ reconnect: true, reconnectBaseMs: 1, reconnectMaxMs: 1 });
+  const socket = FakeWebSocket.instances[0];
+  socket.open();
+  socket.close(4002);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(FakeWebSocket.instances.length, 1);
+  assert.equal(gev.socket, null);
+  gev.destroy();
 });

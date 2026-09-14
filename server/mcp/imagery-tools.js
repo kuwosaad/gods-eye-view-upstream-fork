@@ -328,7 +328,7 @@ export async function runImageryOperation(
       const timer = setTimeout(() => {
         child.kill?.('SIGTERM');
         const cause = new Error(`Imagery operation '${name}' timed out`);
-        cause.code = 'TIMEOUT';
+        cause.code = 'REQUEST_TIMEOUT';
         finish(reject, cause);
       }, operation.timeoutMs);
       const abort = () => {

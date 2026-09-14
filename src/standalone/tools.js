@@ -19,6 +19,8 @@ import {
   DEFAULT_CAPTURE_MAX_PIXELS,
 } from '../agent/captureView.js';
 
+const AGENT_SESSION_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
+
 /** Attach scene tools, rendering listeners and the standalone debug handle. */
 export function createStandaloneTools({
   scene,
@@ -135,6 +137,10 @@ export function createStandaloneTools({
     const querySession = new URLSearchParams(window.location.search).get(
       'agentSession',
     );
+    const agentSessionId =
+      typeof querySession === 'string' && AGENT_SESSION_RE.test(querySession)
+        ? querySession
+        : 'default';
     const observations = createAgentObservationReader({
       viewer,
       styleManager,
@@ -143,7 +149,7 @@ export function createStandaloneTools({
       annotations,
     });
     const agent = createAgentBrowserClient({
-      sessionId: querySession || 'default',
+      sessionId: agentSessionId,
       token: import.meta.env.GEV_AGENT_TOKEN,
       actionRunner: voiceCommands.runner,
       getState: observations.getState,

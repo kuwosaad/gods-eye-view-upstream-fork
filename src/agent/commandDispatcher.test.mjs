@@ -140,6 +140,54 @@ test('handles viewport capture as a read-only browser command', async () => {
   assert.equal('data' in result.result.metadata, false);
 });
 
+test('capture forwards the requested output format', async () => {
+  let mimeType;
+  const target = {
+    width: 0,
+    height: 0,
+    getContext: () => ({ drawImage() {} }),
+    toDataURL(type) {
+      mimeType = type;
+      return `data:${type};base64,aW1hZ2U=`;
+    },
+  };
+  const dispatcher = createAgentCommandDispatcher({
+    actionRunner: async () => null,
+    capture: {
+      source: { width: 2, height: 1 },
+      documentRef: { hidden: false, createElement: () => target },
+      requireFresh: false,
+    },
+  });
+  const result = await dispatcher.dispatch({
+    id: 'capture-format',
+    sessionId: 'main',
+    tool: 'gev_capture_view',
+    arguments: { format: 'webp' },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(mimeType, 'image/webp');
+});
+
+test('canonical read-only tools do not enter the mutation queue by default', async () => {
+  let active = 0;
+  let maxActive = 0;
+  const dispatcher = createAgentCommandDispatcher({
+    actionRunner: async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return null;
+    },
+  });
+  await Promise.all([
+    dispatcher.dispatch({ id: 'a', sessionId: 'main', tool: 'analyst_query', arguments: {} }),
+    dispatcher.dispatch({ id: 'b', sessionId: 'main', tool: 'next_iss_pass', arguments: {} }),
+  ]);
+  assert.equal(maxActive, 2);
+});
+
 test('honours explicit mutation classification and bounds queued work', async () => {
   let release;
   const gate = new Promise((resolve) => {

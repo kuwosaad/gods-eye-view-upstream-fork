@@ -13,6 +13,7 @@ export const GEV_ERROR_CODES = Object.freeze([
   'QUEUE_FULL', 'INVALID_ARGUMENTS', 'QUOTA_EXCEEDED', 'SESSION_REQUIRED',
   'ACCESS_DENIED', 'SESSION_EXISTS', 'SESSION_QUOTA', 'RESOURCE_NOT_FOUND',
   'LEASE_OWNER_REQUIRED', 'CAPABILITY_UNAVAILABLE', 'REMOTE_ERROR',
+  'ARTIFACT_NOT_FOUND', 'INVALID_ARTIFACT', 'INVALID_ARTIFACT_ID',
 ]);
 
 const TYPES = new Set(['gev:hello', 'gev:command', 'gev:cancel', 'gev:response', 'gev:error', 'gev:event', 'gev:ping', 'gev:pong', 'registered']);

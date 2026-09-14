@@ -99,13 +99,19 @@ export async function captureCesiumViewport({
   target.height = size.height;
   const context = target.getContext?.('2d');
   if (!context) return null;
-  const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
+  const mimeType = format === 'png'
+    ? 'image/png'
+    : format === 'webp'
+      ? 'image/webp'
+      : 'image/jpeg';
   let dataUrl;
   try {
     context.drawImage(canvas, 0, 0, size.width, size.height);
     dataUrl = target.toDataURL(
       mimeType,
-      mimeType === 'image/jpeg' ? quality : undefined,
+      mimeType === 'image/jpeg' || mimeType === 'image/webp'
+        ? quality
+        : undefined,
     );
   } catch {
     return null;

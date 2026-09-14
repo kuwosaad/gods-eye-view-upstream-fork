@@ -8,7 +8,6 @@ function option(name, fallback) {
 
 const instance = await runStdioMcpServer({
   url: option('--url'),
-  sessionId: option('--session', 'default'),
   token: process.env.GEV_AGENT_TOKEN,
 });
 

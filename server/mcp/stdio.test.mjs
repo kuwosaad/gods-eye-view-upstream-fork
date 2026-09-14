@@ -35,3 +35,8 @@ test('stdio proxy requires a token and permits only local /mcp URLs', () => {
   assert.throws(() => createStdioMcpServer({ url: 'http://localhost:5173/other', token: 'x' }), /\/mcp/);
   assert.throws(() => createStdioMcpServer({ url: 'ws://localhost:5173/mcp', token: 'x' }), /localhost/);
 });
+
+test('stdio proxy defaults to the documented Vite port', () => {
+  const proxy = createStdioMcpServer({ token: 'secret', fetch: async () => {} });
+  assert.equal(proxy.endpoint, 'http://127.0.0.1:4173/mcp');
+});

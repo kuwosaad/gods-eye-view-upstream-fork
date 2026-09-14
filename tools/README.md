@@ -1,6 +1,10 @@
 # Tools
 
-CLI scripts for fetching, rendering, and reprojecting geospatial imagery. All tools read the Google Maps API key from `.env` automatically.
+CLI scripts for fetching, rendering, and reprojecting geospatial imagery. The
+Google API tools accept `--key`; otherwise they read `GOOGLE_MAPS_API_KEY` from
+the environment or `.env`. `streetview-headings.mjs` also prefers
+`GOOGLE_MAPS_SERVER_API_KEY` when it is set. The server-side MCP imagery tools
+use that same server-key name with `GOOGLE_MAPS_API_KEY` as a fallback.
 
 Output files go to `output/` by default (gitignored).
 
@@ -8,7 +12,8 @@ Output files go to `output/` by default (gitignored).
 
 - Node.js (via `mise`)
 - `sharp` and `puppeteer` (devDependencies — `npm install`)
-- Google Maps API key in `.env` as `GOOGLE_MAPS_API_KEY`
+- Google Maps API key in `.env` as `GOOGLE_MAPS_API_KEY` (or
+  `GOOGLE_MAPS_SERVER_API_KEY` for `streetview-headings.mjs` and MCP imagery)
 - APIs enabled on your Google Cloud project: **Map Tiles API**, **Street View Static API**
 
 ---
@@ -63,6 +68,8 @@ node tools/streetview-headings.mjs --lat 30.266476 --lon -97.73719 --fov 120 --p
 | `--neighbors` | off | Also fetch images from nearby Street View locations |
 
 The `--neighbors` flag queries Google's panorama metadata for linked locations, deduplicates them by pano ID via the metadata API, and fetches 8 heading images from each unique neighbor within 15m.
+
+`streetview-headings --fov` is the horizontal Street View field of view.
 
 ---
 
@@ -124,6 +131,9 @@ node tools/pano-pinhole.mjs --input output/panorama_30.266476_-97.73719.jpg --al
 | `--step` | 45 | Heading step for `--all` mode |
 
 Reports horizontal, vertical, and diagonal FOV plus equivalent focal length.
+
+`pano-pinhole --hfov` is horizontal FOV. It is separate from the vertical FOV
+used by `cesium-render --fov` below.
 
 ---
 

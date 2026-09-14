@@ -1,4 +1,5 @@
 import { captureCesiumViewport } from './captureView.js';
+import { isAgentToolReadOnly } from './toolCatalog.js';
 
 /**
  * Transport agnostic command bridge for agent clients.
@@ -131,6 +132,7 @@ export function createAgentCommandDispatcher({
     // name was added to a read set.
     if (typeof request?.mutation === 'boolean') return !request.mutation;
     if (typeof isReadTool === 'function') return Boolean(isReadTool(tool));
+    if (isAgentToolReadOnly(tool)) return true;
     if (mutations) return !mutations.has(tool);
     return reads.has(tool);
   };
@@ -141,7 +143,13 @@ export function createAgentCommandDispatcher({
     if (request.tool === 'gev_capture_view') {
       if (!capture)
         throw error('UNAVAILABLE', 'Viewport capture is not configured');
-      const image = await captureCesiumViewport({ ...capture, signal });
+      const image = await captureCesiumViewport({
+        ...capture,
+        ...(request.arguments.format
+          ? { format: request.arguments.format }
+          : {}),
+        signal,
+      });
       if (!image) return null;
       // Keep provenance separate from MCP image data. The snapshot is bounded
       // and intentionally excludes the base64 payload/data URL.

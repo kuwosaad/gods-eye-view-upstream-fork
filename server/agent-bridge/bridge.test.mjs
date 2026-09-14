@@ -175,6 +175,50 @@ test('forwards mutation classification and sends cancellation on abort', async (
   bridge.close();
 });
 
+test('request timeout cancels browser work before rejecting the waiter', async () => {
+  const bridge = createAgentBridge({
+    WebSocketServer: FakeWss,
+    token: 'secret',
+    requestTimeoutMs: 5,
+  });
+  const http = server();
+  bridge.attach(http);
+  const raw = new EventEmitter();
+  raw.write = () => {};
+  raw.destroy = () => {};
+  http.emit('upgrade', {
+    url: '/__gev_agent?sessionId=main&token=secret',
+    headers: { origin: 'http://localhost', host: 'localhost' },
+    socket: { remoteAddress: '127.0.0.1' },
+  }, raw, Buffer.alloc(0));
+  const socket = bridge.sessions.get('main').socket;
+  const pending = bridge.request('main', 'slow');
+  const commandId = socket.sent.at(-1).id;
+  await assert.rejects(pending, { code: 'REQUEST_TIMEOUT' });
+  assert.deepEqual(socket.sent.at(-1), { type: 'gev:cancel', id: commandId });
+  bridge.close();
+});
+
+test('bridge shutdown cancels browser work before closing the socket', async () => {
+  const bridge = createAgentBridge({ WebSocketServer: FakeWss, token: 'secret' });
+  const http = server();
+  bridge.attach(http);
+  const raw = new EventEmitter();
+  raw.write = () => {};
+  raw.destroy = () => {};
+  http.emit('upgrade', {
+    url: '/__gev_agent?sessionId=main&token=secret',
+    headers: { origin: 'http://localhost', host: 'localhost' },
+    socket: { remoteAddress: '127.0.0.1' },
+  }, raw, Buffer.alloc(0));
+  const socket = bridge.sessions.get('main').socket;
+  const pending = bridge.request('main', 'slow');
+  const commandId = socket.sent.at(-1).id;
+  bridge.close();
+  await assert.rejects(pending, { code: 'BRIDGE_CLOSED' });
+  assert.deepEqual(socket.sent.at(-1), { type: 'gev:cancel', id: commandId });
+});
+
 test('bounds pending requests per session and rejects sends on a replaced session', async () => {
   const bridge = createAgentBridge({
     WebSocketServer: FakeWss,
@@ -200,6 +244,52 @@ test('bounds pending requests per session and rejects sends on a replaced sessio
   upgrade();
   await assert.rejects(first, { code: 'SESSION_CLOSED' });
   bridge.close();
+});
+
+test('ignores responses and events from a stale replaced socket', async () => {
+  const bridge = createAgentBridge({ WebSocketServer: FakeWss, token: 'secret' });
+  const http = server();
+  bridge.attach(http);
+  const upgrade = () => {
+    const raw = new EventEmitter();
+    raw.write = () => {};
+    raw.destroy = () => {};
+    http.emit('upgrade', {
+      url: '/__gev_agent?sessionId=main&token=secret',
+      headers: { origin: 'http://localhost', host: 'localhost' },
+      socket: { remoteAddress: '127.0.0.1' },
+    }, raw, Buffer.alloc(0));
+  };
+  upgrade();
+  const stale = bridge.sessions.get('main').socket;
+  upgrade();
+  const current = bridge.sessions.get('main').socket;
+  const pending = bridge.request('main', 'inspect');
+  const id = current.sent.at(-1).id;
+  stale.emit('message', JSON.stringify({ type: 'gev:response', id, result: 'stale' }));
+  stale.emit('message', JSON.stringify({ type: 'gev:event', event: 'stale' }));
+  current.emit('message', JSON.stringify({ type: 'gev:response', id, result: 'current' }));
+  assert.equal(await pending, 'current');
+  bridge.close();
+});
+
+test('swallows cancellation send races while rejecting pending work', async () => {
+  const bridge = createAgentBridge({ WebSocketServer: FakeWss, token: 'secret' });
+  const http = server();
+  bridge.attach(http);
+  const raw = new EventEmitter();
+  raw.write = () => {};
+  raw.destroy = () => {};
+  http.emit('upgrade', {
+    url: '/__gev_agent?sessionId=main&token=secret',
+    headers: { origin: 'http://localhost', host: 'localhost' },
+    socket: { remoteAddress: '127.0.0.1' },
+  }, raw, Buffer.alloc(0));
+  const socket = bridge.sessions.get('main').socket;
+  const pending = bridge.request('main', 'slow');
+  socket.send = () => { throw new Error('socket closed during send'); };
+  assert.doesNotThrow(() => bridge.close());
+  await assert.rejects(pending, { code: 'BRIDGE_CLOSED' });
 });
 
 test('does not treat a lookalike origin as localhost', () => {

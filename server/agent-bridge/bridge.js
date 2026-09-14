@@ -119,10 +119,20 @@ export function createAgentBridge({
   };
 
   const send = (socket, message) => {
-    if (socket.readyState !== 1) return false;
-    // Keep the pre-versioned registration envelope during browser rollout.
-    socket.send(message.type === 'registered' ? JSON.stringify(message) : encodeMessage(message));
-    return true;
+    const payload =
+      message.type === 'registered'
+        ? JSON.stringify(message)
+        : encodeMessage(message);
+    try {
+      if (socket.readyState !== 1) return false;
+      // Keep the pre-versioned registration envelope during browser rollout.
+      socket.send(payload);
+      return true;
+    } catch {
+      // A socket can close between the readyState check and send(). Cleanup
+      // paths must still reject their waiters when that race happens.
+      return false;
+    }
   };
 
   const rejectPending = (sessionId, error) => {
@@ -130,11 +140,16 @@ export function createAgentBridge({
       if (item.sessionId !== sessionId) continue;
       clearTimeout(item.timer);
       pending.delete(id);
+      send(item.socket, { type: 'gev:cancel', id });
       item.reject(error);
     }
   };
 
   const onMessage = (socket, sessionId, data) => {
+    // A replaced browser may still have queued messages in the event loop.
+    // It no longer owns this session and must not answer requests or publish
+    // events for the replacement.
+    if (sessions.get(sessionId)?.socket !== socket) return;
     if (Buffer.byteLength(String(data)) > maxMessageBytes) {
       socket.close(1009, 'message too large');
       return;
@@ -317,6 +332,7 @@ export function createAgentBridge({
       };
       const timer = setTimeout(() => {
         pending.delete(id);
+        send(session.socket, { type: 'gev:cancel', id });
         finish(reject,
           Object.assign(new Error('request timed out'), {
             code: 'REQUEST_TIMEOUT',
@@ -362,16 +378,31 @@ export function createAgentBridge({
     return () => sessionListeners.delete(listener);
   };
 
+  const disconnect = (sessionId, { code = 4002, reason = 'session closed by owner' } = {}) => {
+    const session = sessions.get(sessionId);
+    if (!session) return false;
+    sessions.delete(sessionId);
+    rejectPending(
+      sessionId,
+      Object.assign(new Error('session closed'), { code: 'SESSION_CLOSED' }),
+    );
+    session.events.clear();
+    publishSession({ type: 'disconnected', sessionId });
+    session.socket.close(code, reason);
+    return true;
+  };
+
   const close = () => {
     closed = true;
-    for (const session of sessions.values())
-      session.socket.close(1001, 'bridge closed');
-    if (heartbeatTimer) clearInterval(heartbeatTimer);
-    for (const item of pending.values()) {
+    for (const [id, item] of pending) {
       clearTimeout(item.timer);
+      send(item.socket, { type: 'gev:cancel', id });
       item.reject(Object.assign(new Error('agent bridge closed'), { code: 'BRIDGE_CLOSED' }));
     }
     pending.clear();
+    for (const session of sessions.values())
+      session.socket.close(1001, 'bridge closed');
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
     sessions.clear();
     sessionListeners.clear();
     wss?.close();
@@ -382,6 +413,7 @@ export function createAgentBridge({
     request,
     subscribe,
     subscribeSessions,
+    disconnect,
     close,
     sessions,
     get attached() {

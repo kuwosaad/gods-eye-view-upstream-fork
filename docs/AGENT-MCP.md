@@ -32,10 +32,12 @@ bounded JSON with an `id`, `sessionId`, `name`, `args`, and optional `mutation`
 flag. Responses carry the same `id` and either `result` or a bounded error.
 Supported bridge message types are `gev:hello`, `gev:command`, `gev:cancel`,
 `gev:response`, `gev:error`, `gev:event`, `gev:ping`, and `gev:pong`.
+The server also sends a legacy-compatible `registered` acknowledgement when a
+browser session is accepted; it is not a browser command or event.
 
-Successful MCP tool results contain text plus structured JSON. Session actions
-use this stable envelope, and mutations include final observed state after the
-version increments:
+Browser-backed command results contain text plus structured JSON. They use this
+stable envelope, and mutations include final observed state after the version
+increments:
 
 ```json
 {
@@ -47,6 +49,10 @@ version increments:
   "artifacts": []
 }
 ```
+
+This envelope describes browser-backed tool dispatch. Session-management tools,
+resource reads, and `gev_get_state` may return their own MCP-native structured
+shapes.
 
 `npm run dev` and `npm run preview` can enable the same browser bridge and
 `/mcp` integration. Set `GEV_AGENT_TOKEN` for an explicit token; alternatively
@@ -62,12 +68,23 @@ GEV_AGENT_TOKEN="choose-a-long-random-value" npm run build
 GEV_AGENT_TOKEN="choose-a-long-random-value" npm run preview
 ```
 
-Errors expose a short public message and stable code. The public code set
-includes
-`INVALID_REQUEST`, `TOOL_NOT_FOUND`, `SESSION_NOT_FOUND`, `SESSION_CLOSED`,
-`DISCONNECTED`, `REQUEST_TIMEOUT`, `ABORTED`, `QUEUE_FULL`, `LEASED`,
-`PROVIDER_FAILURE`, and `ACCESS_DENIED`; sensitive upstream details stay
-server-side.
+Errors expose a short public message and stable code. Common codes are:
+
+| Code | Meaning |
+| --- | --- |
+| `SESSION_NOT_FOUND` | The requested browser session is unavailable. |
+| `SESSION_REQUIRED` | A call needs a session, but none was selected. |
+| `ACCESS_DENIED` | This principal cannot use the session or operation. |
+| `LEASED` | Another principal currently holds the write lease. |
+| `REQUEST_TIMEOUT` / `ABORTED` | The browser call timed out or was cancelled. |
+| `QUEUE_FULL` | The session mutation queue is at capacity. |
+| `QUOTA_EXCEEDED` | The principal exceeded a cost or byte quota. |
+
+The complete public set also includes `INVALID_REQUEST`, `INVALID_ARGUMENTS`,
+`TOOL_NOT_FOUND`, `SESSION_CLOSED`, `DISCONNECTED`, `SESSION_EXISTS`,
+`SESSION_QUOTA`, `RESOURCE_NOT_FOUND`, `ARTIFACT_NOT_FOUND`,
+`INVALID_ARTIFACT`, `INVALID_ARTIFACT_ID`, and `PROVIDER_FAILURE`. Unknown
+failures collapse to `MCP_ERROR`; sensitive upstream details stay server-side.
 
 ## Capability classes
 
@@ -84,6 +101,11 @@ Every tool should declare one class before it is added to the public catalog:
 Cost-bearing tools have separate per-principal quotas. Session deletion is
 owner-only. The bridge also enforces queue, timeout, cancellation, frame-size,
 and pending-request limits.
+
+The bounded audit trail records a timestamp, principal, session, tool, cost
+class, redacted and size-limited argument summary, outcome, duration, and
+stable error code when a call fails. It does not store raw arguments, provider
+credentials, paths, image data, or the full result payload.
 
 ## Setup
 
@@ -153,18 +175,27 @@ gev://sessions/{id}/annotations
 gev://sessions/{id}/artifacts/{artifactId}
 ```
 
+The `entities` resource is intentionally incomplete: it reports only the
+selected, tracked, and cockpit entities in the active observation context, up
+to the resource bounds. It does not enumerate every entity currently visible
+in the globe. Use `get_entity_context` when you need details for a specific
+entity.
+
 The server invalidates resource caches and sends update notifications after
 mutations. Calling `gev_get_state` remains the direct way to retrieve the
 complete bounded snapshot.
 
 ## Security limits
 
-The initial service is deliberately local. The HTTP endpoint and browser bridge
-require loopback peers and local Host/Origin values, reject forwarding headers,
-and require the bearer token. Request bodies and WebSocket frames are size
-bounded. Browser sessions replace an older connection with the same ID; bridge
-requests have timeouts, cancellation, pending-request limits, and heartbeat
-cleanup. Mutations are serialized per session.
+The initial service is deliberately local. The HTTP endpoint requires a
+loopback peer and local `Host`; an `Origin`, when supplied, must also be local.
+The browser WebSocket bridge requires an `Origin` matching its allowlist (the
+default allows localhost and 127.0.0.1), as well as a loopback peer, local
+`Host`, and bearer token. Both surfaces reject forwarding headers. Request
+bodies and WebSocket frames are size bounded. Browser sessions replace an
+older connection with the same ID; bridge requests have timeouts,
+cancellation, pending-request limits, and heartbeat cleanup. Mutations are
+serialized per session.
 
 Do not expose this service on a LAN or the public internet. Provider keys must
 stay in the existing server-side provider boundary and must never be placed in

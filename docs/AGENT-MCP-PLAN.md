@@ -213,12 +213,13 @@ changes.
 - [x] Generate a dedicated MCP bearer token at launch, with an owner-only runtime
       file or explicit environment override.
 - [x] Compare credentials in constant time and redact them everywhere.
-- [x] Preserve loopback-only defaults, Host validation, strict Origin policy,
-      restrictive CORS, and DNS-rebinding protection.
+- [x] Preserve loopback-only defaults, Host validation, strict WebSocket Origin
+      policy, HTTP Origin validation when supplied, restrictive CORS, and
+      DNS-rebinding protection.
 - [x] Keep credential editing, arbitrary filesystem access, raw URL fetching,
       debug-log writes, and arbitrary process execution outside the tool catalog.
 - [x] Add bounded audit records: principal, session, tool, safe argument summary,
-      duration, result, and cost class.
+      outcome, duration, stable error code, and cost class.
 - [x] Add rate, byte, execution-time, and artifact quotas.
 - [x] Keep remote/LAN operation disabled until a separate authenticated TLS
       deployment mode and visible remote-control indicator exist.
